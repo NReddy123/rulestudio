@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import './App.css'
 
 const Icon = ({ children, size = 18, stroke = 1.8 }) => (
@@ -18,57 +18,134 @@ const icons = {
   download: <><path d="M12 4v11M8 11l4 4 4-4M5 20h14"/></>, check: <path d="m5 12 4 4L19 6"/>,
 }
 
+const defaultRules = [
+  { id: 'rule_customer_eligibility', name: 'Customer eligibility', description: 'Determine if a customer is eligible for an account', conditions: [{ field: 'customer.age', operator: 'gte', value: '18' }], result: true, updated: 'Updated 2 min ago' },
+  { id: 'rule_order_discount', name: 'Order discount', description: 'Apply a discount to qualifying orders', conditions: [{ field: 'order.total', operator: 'gte', value: '100' }], result: true, updated: 'Updated yesterday' },
+  { id: 'rule_shipping_region', name: 'Shipping region', description: 'Check whether a shipping region is supported', conditions: [{ field: 'customer.region', operator: 'equals', value: 'US' }], result: true, updated: 'Updated 3 days ago' },
+]
+
+const createRuleId = () => `rule_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+
+const isConditionValid = ({ operator, value }) => {
+  const normalizedValue = String(value ?? '').trim()
+  return Boolean(normalizedValue) && (!['gte', 'lt'].includes(operator) || Number.isFinite(Number(normalizedValue)))
+}
+
+const loadRules = () => {
+  try {
+    const storedRules = JSON.parse(localStorage.getItem('rulestudio-rules'))
+    if (!Array.isArray(storedRules) || storedRules.length === 0) return defaultRules
+    return storedRules.map((rule, index) => ({ ...rule, id: rule.id || `legacy_rule_${index + 1}` }))
+  } catch {
+    return defaultRules
+  }
+}
+
 function App() {
-  const defaultRules = [
-    { name: 'Customer eligibility', description: 'Determine if a customer is eligible for an account', conditions: [{ field: 'customer.age', operator: 'gte', value: '18' }], result: true, updated: 'Updated 2 min ago' },
-    { name: 'Order discount', description: 'Apply a discount to qualifying orders', conditions: [{ field: 'order.total', operator: 'gte', value: '100' }], result: true, updated: 'Updated yesterday' },
-    { name: 'Shipping region', description: 'Check whether a shipping region is supported', conditions: [{ field: 'customer.region', operator: 'equals', value: 'US' }], result: true, updated: 'Updated 3 days ago' },
-  ]
-  const [rules, setRules] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('rulestudio-rules')) || defaultRules } catch { return defaultRules }
-  })
-  const [activeRule, setActiveRule] = useState(defaultRules[0].name)
+  const [rules, setRules] = useState(loadRules)
+  const [activeRuleId, setActiveRuleId] = useState(() => rules[0]?.id)
   const [tab, setTab] = useState('Expression')
   const [query, setQuery] = useState('')
-  const [saved, setSaved] = useState(false)
+  const [validated, setValidated] = useState(false)
   const [testInput, setTestInput] = useState('{\n  "customer": { "age": 24 }\n}')
   const [testResult, setTestResult] = useState(null)
   const [error, setError] = useState('')
-  const [cacheMessage, setCacheMessage] = useState('Last synced just now')
-  const currentRule = rules.find(rule => rule.name === activeRule) || rules[0]
+  const [storageError, setStorageError] = useState(() => {
+    try {
+      localStorage.getItem('rulestudio-rules')
+      return false
+    } catch {
+      return true
+    }
+  })
+  const currentRule = rules.find(rule => rule.id === activeRuleId) || rules[0]
   const filteredRules = useMemo(() => rules.filter(rule => rule.name.toLowerCase().includes(query.toLowerCase())), [rules, query])
 
-  useEffect(() => { localStorage.setItem('rulestudio-rules', JSON.stringify(rules)) }, [rules])
-  const updateCurrent = changes => setRules(items => items.map(rule => rule.name === activeRule ? { ...rule, ...changes, updated: 'Updated just now' } : rule))
+  const expressionValid = currentRule.conditions.length > 0 && currentRule.conditions.every(isConditionValid)
+
+  const persistRules = nextRules => {
+    try {
+      localStorage.setItem('rulestudio-rules', JSON.stringify(nextRules))
+      setStorageError(false)
+    } catch {
+      setStorageError(true)
+    }
+  }
+  const updateCurrent = changes => {
+    const nextRules = rules.map(rule => rule.id === activeRuleId ? { ...rule, ...changes, updated: 'Updated just now' } : rule)
+    setRules(nextRules)
+    persistRules(nextRules)
+    setTestResult(null)
+    setError('')
+    setValidated(false)
+  }
+  const renameCurrent = name => {
+    const nextRules = rules.map(rule => rule.id === activeRuleId ? { ...rule, name, updated: 'Updated just now' } : rule)
+    setRules(nextRules)
+    persistRules(nextRules)
+    setError('')
+    setTestResult(null)
+    setValidated(false)
+  }
   const addRule = () => {
-    const name = `New rule ${rules.length + 1}`
-    setRules(items => [...items, { name, description: 'Describe what this rule should decide', conditions: [{ field: 'customer.age', operator: 'gte', value: '18' }], result: true, updated: 'Not saved' }])
-    setActiveRule(name); setTab('Expression'); setError('')
+    let index = rules.length + 1
+    while (rules.some(rule => rule.name.toLowerCase() === `new rule ${index}`)) index += 1
+    const name = `New rule ${index}`
+    const id = createRuleId()
+    const newRule = { id, name, description: 'Describe what this rule should decide', conditions: [{ field: 'customer.age', operator: 'gte', value: '18' }], result: true, updated: 'Updated just now' }
+    const nextRules = [...rules, newRule]
+    setRules(nextRules)
+    persistRules(nextRules)
+    setActiveRuleId(id); setTab('Expression'); setError(''); setValidated(false); setTestResult(null)
   }
   const deleteRule = () => {
     if (rules.length === 1) return setError('At least one rule must remain.')
-    const remaining = rules.filter(rule => rule.name !== activeRule)
-    setRules(remaining); setActiveRule(remaining[0].name)
+    const remaining = rules.filter(rule => rule.id !== activeRuleId)
+    setRules(remaining); persistRules(remaining); setActiveRuleId(remaining[0].id); setValidated(false); setTestResult(null); setError('')
   }
-  const saveRule = () => {
-    if (!currentRule.conditions.length || currentRule.conditions.some(item => !item.value.trim())) return setError('Complete every condition before saving.')
-    setError(''); setSaved(true); setTimeout(() => setSaved(false), 1800)
+  const validateRule = () => {
+    setValidated(false)
+    if (!currentRule.name.trim()) return setError('Enter a name for this rule before validating.')
+    if (rules.some(rule => rule.id !== currentRule.id && rule.name.trim().toLowerCase() === currentRule.name.trim().toLowerCase())) return setError('Rule names must be unique.')
+    if (!currentRule.conditions.length) return setError('Add at least one condition before validating.')
+    if (!currentRule.conditions.every(isConditionValid)) return setError('Complete every condition with a valid value before validating.')
+    setError(''); setValidated(true)
   }
-  const exportJson = () => {
-    const url = URL.createObjectURL(new Blob([JSON.stringify(currentRule, null, 2)], { type: 'application/json' }))
-    const link = document.createElement('a'); link.href = url; link.download = `${activeRule.toLowerCase().replaceAll(' ', '-')}.json`; link.click(); URL.revokeObjectURL(url)
+  const downloadJson = (data, fileName) => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName
+    document.body.append(link)
+    link.click()
+    setTimeout(() => {
+      link.remove()
+      URL.revokeObjectURL(url)
+    }, 1000)
   }
+  const exportJson = () => downloadJson(currentRule, `${currentRule.name.toLowerCase().replaceAll(' ', '-')}.json`)
+  const exportAllRules = () => downloadJson(rules, 'rulestudio-rules.json')
   const evaluateRule = () => {
     try {
       const data = JSON.parse(testInput)
+      if (!currentRule.conditions.length) throw new Error('Add at least one condition before testing.')
+      if (!currentRule.conditions.every(isConditionValid)) throw new Error('Complete all conditions with valid values before testing.')
       const matched = currentRule.conditions.every(({ field, operator, value }) => {
         const actual = field.split('.').reduce((object, key) => object?.[key], data)
         if (actual === undefined) throw new Error(`Missing value: ${field}`)
-        if (operator === 'gte') return Number(actual) >= Number(value)
-        if (operator === 'lt') return Number(actual) < Number(value)
-        return String(actual).toLowerCase() === value.toLowerCase()
+        if (operator === 'gte' || operator === 'lt') {
+          const actualNumber = typeof actual === 'number' || typeof actual === 'string' && actual.trim() ? Number(actual) : NaN
+          const expectedNumber = typeof value === 'number' || typeof value === 'string' && value.trim() ? Number(value) : NaN
+          if (!Number.isFinite(actualNumber) || !Number.isFinite(expectedNumber)) throw new Error(`Expected numeric values for ${field}.`)
+          return operator === 'gte' ? actualNumber >= expectedNumber : actualNumber < expectedNumber
+        }
+        return String(actual).toLowerCase() === String(value).toLowerCase()
       })
-      setTestResult(matched ? 'Rule matched — Eligible' : 'Rule did not match'); setError('')
+      setTestResult({
+        matched,
+        message: matched ? `Conditions matched; returns ${JSON.stringify(currentRule.result)}.` : 'Conditions did not match; no result was returned.',
+      })
+      setError('')
     } catch (exception) { setTestResult(null); setError(exception.message || 'Invalid test data.') }
   }
 
@@ -79,10 +156,10 @@ function App() {
         <div className="workspace-label">WORKSPACE</div>
         <nav>
           <button className="nav-item active" aria-label="Rules"><Icon>{icons.grid}</Icon><span>Rules</span><span className="nav-count">{rules.length}</span></button>
-          <button className="nav-item" onClick={() => setError('Models are not configured for this workspace.')}><Icon>{icons.layers}</Icon><span>Models</span></button>
-          <button className="nav-item" onClick={() => setCacheMessage('Last synced just now')}><Icon>{icons.database}</Icon><span>Cache</span><span className="status-dot"></span></button>
+          <button className="nav-item" disabled title="Models are not available yet"><Icon>{icons.layers}</Icon><span>Models</span></button>
+          <button className="nav-item" onClick={() => document.getElementById('browser-storage')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}><Icon>{icons.database}</Icon><span>Local data</span></button>
         </nav>
-        <div className="sidebar-bottom"><button className="nav-item"><Icon>{icons.settings}</Icon><span>Settings</span></button><div className="profile"><div className="avatar">AR</div><div><b>Alex Rivera</b><small>Workspace owner</small></div><Icon size={15}>{icons.more}</Icon></div></div>
+        <div className="sidebar-bottom"><button className="nav-item" disabled title="Settings are not available yet"><Icon>{icons.settings}</Icon><span>Settings</span></button><div className="profile"><div className="avatar">LS</div><div><b>Local workspace</b><small>Stored in this browser</small></div></div></div>
       </aside>
 
       <main className="main">
@@ -92,23 +169,23 @@ function App() {
             <div className="panel-heading"><div><h2>Rule sets</h2><p>Manage your decision logic</p></div>            <button className="icon-btn" aria-label="Delete current rule" onClick={deleteRule}><Icon size={17}>{icons.trash}</Icon></button></div>
             <div className="search"><Icon size={16}>{icons.search}</Icon><label className="sr-only" htmlFor="rule-search">Search rules</label><input id="rule-search" placeholder="Search rules" value={query} onChange={event => setQuery(event.target.value)} /></div>
             <div className="list-label">RULES <span>{filteredRules.length}</span></div>
-            <div className="rule-items">{filteredRules.map((rule, index) => <button key={rule.name} className={`rule-item ${activeRule === rule.name ? 'selected' : ''}`} onClick={() => { setActiveRule(rule.name); setError('') }}><div className={`rule-icon ${index % 3 === 0 ? 'purple' : index % 3 === 1 ? 'orange' : 'blue'}`}><Icon size={17}>{icons.code}</Icon></div><div className="rule-copy"><b>{rule.name}</b><small>{rule.updated}</small></div><Icon size={14}>{icons.chevron}</Icon></button>)}</div>
+            <div className="rule-items">{filteredRules.map((rule, index) => <button key={rule.id} className={`rule-item ${activeRuleId === rule.id ? 'selected' : ''}`} onClick={() => { setActiveRuleId(rule.id); setError(''); setTestResult(null) }}><div className={`rule-icon ${index % 3 === 0 ? 'purple' : index % 3 === 1 ? 'orange' : 'blue'}`}><Icon size={17}>{icons.code}</Icon></div><div className="rule-copy"><b>{rule.name}</b><small>{rule.updated}</small></div><Icon size={14}>{icons.chevron}</Icon></button>)}</div>
             <button className="add-rule" onClick={addRule}><Icon size={16}>{icons.plus}</Icon> Add rule</button>
           </section>
 
           <section className="editor">
-            <div className="editor-head"><div><div className="title-row"><div className="rule-icon purple"><Icon size={18}>{icons.code}</Icon></div><input className="rule-title" aria-label="Rule name" value={currentRule.name} onChange={event => { const name = event.target.value; setRules(items => items.map(rule => rule.name === activeRule ? { ...rule, name } : rule)); setActiveRule(name) }} /><span className="published"><span></span> Published</span></div><input className="description-input" aria-label="Rule description" value={currentRule.description} onChange={event => updateCurrent({ description: event.target.value })} /></div><div className="editor-tools"><span className="last-saved">Saved just now</span></div></div>
+            <div className="editor-head"><div><div className="title-row"><div className="rule-icon purple"><Icon size={18}>{icons.code}</Icon></div><input className="rule-title" aria-label="Rule name" value={currentRule.name} onChange={event => renameCurrent(event.target.value)} /><span className="published"><span></span> Local only</span></div><input className="description-input" aria-label="Rule description" value={currentRule.description} onChange={event => updateCurrent({ description: event.target.value })} /></div><div className="editor-tools"><span className="last-saved">{storageError ? 'Storage unavailable' : 'Auto-save on'}</span></div></div>
             <div className="tabs"><button className={tab === 'Expression' ? 'active' : ''} onClick={() => setTab('Expression')}>Expression</button><button className={tab === 'JSON' ? 'active' : ''} onClick={() => setTab('JSON')}>JSON</button><button className={tab === 'Test' ? 'active' : ''} onClick={() => setTab('Test')}>Test rule</button></div>
             {tab === 'Expression' ? <div className="expression-card">
               <div className="expression-head"><div><span className="eyebrow">RULE EXPRESSION</span><h3>When all of these conditions are true</h3></div><button className="small-btn" onClick={() => updateCurrent({ conditions: [...currentRule.conditions, { field: 'customer.age', operator: 'gte', value: '' }] })}><Icon size={15}>{icons.plus}</Icon> Add condition</button></div>
               {currentRule.conditions.map((condition, index) => <div className="logic-line" key={index}><div className="logic-badge">AND</div><div className="logic-stem"></div><div className="condition-row"><span className="drag">⠿</span><select aria-label="Condition field" value={condition.field} onChange={event => updateCurrent({ conditions: currentRule.conditions.map((item, itemIndex) => itemIndex === index ? { ...item, field: event.target.value } : item) })}><option>customer.age</option><option>customer.region</option><option>order.total</option></select><select aria-label="Condition operator" value={condition.operator} onChange={event => updateCurrent({ conditions: currentRule.conditions.map((item, itemIndex) => itemIndex === index ? { ...item, operator: event.target.value } : item) })}><option value="gte">is greater than or equal to</option><option value="lt">is less than</option><option value="equals">equals</option></select><input aria-label="Condition value" value={condition.value} placeholder="Value" onChange={event => updateCurrent({ conditions: currentRule.conditions.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item) })} /><button className="remove-btn" aria-label="Remove condition" onClick={() => updateCurrent({ conditions: currentRule.conditions.filter((_, itemIndex) => itemIndex !== index) })}><Icon size={16}>{icons.trash}</Icon></button></div></div>)}
-              <div className="then-block"><div className="then-label"><span>THEN</span><div></div></div><div className="result-card"><div className="result-icon"><Icon size={17}>{icons.check}</Icon></div><div><b>Eligible</b><small>Return <code>true</code></small></div><button className="result-more"><Icon size={16}>{icons.more}</Icon></button></div></div>
-              <div className="expression-footer"><span><span className="valid-dot"></span> {currentRule.conditions.length && currentRule.conditions.every(item => item.value.trim()) ? 'Expression is valid' : 'Complete all conditions'}</span><button className="run-btn" onClick={() => { setTab('Test'); evaluateRule() }}><Icon size={14}>{icons.play}</Icon> Run test</button></div>
-            </div> : tab === 'JSON' ? <pre className="json-view">{JSON.stringify(currentRule, null, 2)}</pre> : <div className="test-card"><h3>Test this rule</h3><p>Provide sample data to evaluate the current expression.</p><label htmlFor="test-input" className="sr-only">Sample JSON data</label><textarea id="test-input" value={testInput} onChange={event => setTestInput(event.target.value)} /><button className="primary-btn" onClick={evaluateRule}><Icon size={16}>{icons.play}</Icon> Evaluate rule</button>{testResult && <div className="test-result"><span>✓</span> {testResult}</div>}</div>}
-            {error && <div className="error-message" role="alert">{error}</div>}<div className="editor-bottom"><div className="metadata"><div><span>Rule ID</span><b>rule_{activeRule.toLowerCase().replaceAll(' ', '_')}</b></div><div><span>Version</span><b>v1.4.2</b></div><div><span>Last modified</span><b>{currentRule.updated}</b></div></div><button className="primary-btn save" onClick={saveRule}>{saved ? 'Saved ✓' : 'Save changes'}</button></div>
+              <div className="then-block"><div className="then-label"><span>THEN</span><div></div></div><div className="result-card"><div className="result-icon"><Icon size={17}>{icons.code}</Icon></div><div><b>Return value</b><select className="result-value" aria-label="Rule result" value={String(currentRule.result)} onChange={event => updateCurrent({ result: event.target.value === 'true' })}><option value="true">true</option><option value="false">false</option></select></div></div></div>
+              <div className="expression-footer"><span><span className="valid-dot" style={{ background: expressionValid ? undefined : '#e57c7c' }}></span> {expressionValid ? 'Expression is valid' : 'Complete all conditions with valid values'}</span><button className="run-btn" onClick={() => { setTab('Test'); evaluateRule() }}><Icon size={14}>{icons.play}</Icon> Run test</button></div>
+            </div> : tab === 'JSON' ? <pre className="json-view">{JSON.stringify(currentRule, null, 2)}</pre> : <div className="test-card"><h3>Test this rule</h3><p>Provide sample data to evaluate the current expression.</p><label htmlFor="test-input" className="sr-only">Sample JSON data</label><textarea id="test-input" value={testInput} onChange={event => { setTestInput(event.target.value); setTestResult(null); setError('') }} /><button className="primary-btn" onClick={evaluateRule}><Icon size={16}>{icons.play}</Icon> Evaluate rule</button>{testResult && <div className={`test-result ${testResult.matched ? 'match' : 'no-match'}`} role="status"><span>{testResult.matched ? '✓' : '×'}</span> {testResult.message}</div>}</div>}
+            {error && <div className="error-message" role="alert">{error}</div>}<div className="editor-bottom"><div className="metadata"><div><span>Rule ID</span><b>{currentRule.id}</b></div><div><span>Conditions</span><b>{currentRule.conditions.length}</b></div><div><span>Last modified</span><b>{currentRule.updated}</b></div></div><button className="primary-btn save" onClick={validateRule}>{validated ? 'Valid ✓' : 'Validate rule'}</button></div>
           </section>
 
-          <aside className="cache-panel"><div className="cache-title"><div><h2><span className="cache-live"></span> Cache</h2><p>Local rule cache</p></div><button className="icon-btn" aria-label="Refresh cache" onClick={() => setCacheMessage('Last synced just now')}><Icon size={16}>{icons.refresh}</Icon></button></div><div className="cache-status"><span>●</span><div><b>In sync</b><small>{cacheMessage}</small></div></div><div className="cache-stats"><div><span>Rules cached</span><b>{rules.length}</b></div><div><span>Cache size</span><b>12.4 KB</b></div><div><span>Hit rate</span><b>98.6%</b></div></div><div className="cache-divider"></div><div className="cache-heading">RECENT ACTIVITY</div><div className="activity"><div className="activity-item"><span className="activity-icon green"><Icon size={14}>{icons.check}</Icon></span><div><b>Rules synced</b><small>Just now</small></div></div><div className="activity-item"><span className="activity-icon purple"><Icon size={14}>{icons.code}</Icon></span><div><b>{activeRule}</b><small>{currentRule.updated}</small></div></div><div className="activity-item"><span className="activity-icon orange"><Icon size={14}>{icons.refresh}</Icon></span><div><b>Cache refreshed</b><small>{cacheMessage}</small></div></div></div><button className="refresh-btn" onClick={() => setCacheMessage('Last synced just now')}><Icon size={15}>{icons.refresh}</Icon> Refresh cache</button></aside>
+          <aside className="cache-panel" id="browser-storage"><div className="cache-title"><div><h2><span className="cache-live" style={{ background: storageError ? '#e57c7c' : undefined }}></span> Browser storage</h2><p>Local to this device</p></div></div><div className="cache-status"><span style={{ color: storageError ? '#e57c7c' : undefined }}>{storageError ? '!' : '●'}</span><div><b>{storageError ? 'Storage unavailable' : 'Auto-save active'}</b><small>{storageError ? 'Changes could not be saved.' : 'Rules stay in this browser.'}</small></div></div><div className="cache-stats"><div><span>Rules in workspace</span><b>{rules.length}</b></div><div><span>Storage scope</span><b>This browser</b></div></div><div className="cache-divider"></div><div className="cache-heading">BACKUP</div><div className="activity"><div className="activity-item"><span className="activity-icon blue"><Icon size={14}>{icons.database}</Icon></span><div><b>JSON backup</b><small>Export all {rules.length} rules to move or back them up.</small></div></div></div><button className="refresh-btn" onClick={exportAllRules}><Icon size={15}>{icons.download}</Icon> Export all rules</button></aside>
         </div>
       </main>
     </div>
