@@ -17,3 +17,15 @@ npm run dev
 ```
 
 Run `npm run lint` and `npm run build` before submitting changes.
+
+## GitHub Pages
+
+The site is deployed automatically by GitHub Actions whenever changes are pushed
+to `main`. Enable GitHub Pages in the repository settings with **Source** set to
+**GitHub Actions**, then open:
+
+```text
+https://<github-user>.github.io/rulestudio/
+```
+
+The workflow can also be started manually from the **Actions** tab.
