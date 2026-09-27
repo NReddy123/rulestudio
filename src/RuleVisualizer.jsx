@@ -284,7 +284,7 @@ function RuleVisualizer({ rule, testResult, onEdit, onTest }) {
           maxZoom={1.5}
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--flow-grid)" />
-          <Controls position="bottom-left" showInteractive={false} />
+          <Controls position="bottom-left" orientation={compact ? 'horizontal' : 'vertical'} showInteractive={false} />
           <FitFlowToNodes fitKey={layoutKey} />
         </ReactFlow>
       </div>
